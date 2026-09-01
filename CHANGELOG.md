@@ -92,4 +92,4 @@ Toutes les modifications importantes de PatSecure sont décrites dans ce fichier
 - Affichage de l'espace disque et de la mémoire.
 - Affichage partiel des ports réseau en écoute.
 
-Cette version mélangeait l'audit et la maintenance. Elle est conservée dans l'historique, mais la v0.3.0 est recommandée.
+Cette version mélangeait l'audit et la maintenance. Elle est conservée dans l'historique, mais la v0.4.0 est désormais la version stable recommandée.
