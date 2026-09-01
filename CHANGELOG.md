@@ -13,8 +13,11 @@ Toutes les modifications importantes de PatSecure sont décrites dans ce fichier
 - Conservation des sorties réseau brutes uniquement dans le rapport privé.
 - Détection des écoutes réseau limitées à la boucle locale.
 - Détection des écoutes génériques acceptant potentiellement des connexions sur plusieurs interfaces.
+- Reconnaissance de services réseau courants : Avahi/mDNS sur UDP 5353, DHCPv6/NetworkManager sur UDP 546 et CUPS sur TCP 631.
 - Contrôle de la présence d'IPv6 global sans enregistrer les adresses.
+- Vérification de la prise en charge IPv6 par UFW et de la politique entrante par défaut.
 - Détection UPnP/IGD lorsque `upnpc` est disponible, sans afficher ni enregistrer l'adresse externe.
+- Diagnostic explicite du timeout UPnP lorsque la passerelle ne répond pas dans le délai prévu.
 - Repli sur nftables lorsque UFW n'est pas installé.
 - Résumé chiffré des résultats `OK`, `ATTENTION`, `ERREUR` et `INFO`.
 - Consultation séparée du dernier rapport privé et du dernier rapport partageable.
@@ -25,7 +28,10 @@ Toutes les modifications importantes de PatSecure sont décrites dans ce fichier
 
 - Les rapports sont créés avec des permissions restrictives (`600`).
 - Le détail de `dpkg --audit`, UFW, nftables et `ss` n'est plus recopié dans le rapport partageable.
-- L'audit des ports précise qu'une écoute sur plusieurs interfaces ne prouve pas à elle seule une exposition Internet.
+- L'audit des ports distingue désormais les services connus des écoutes multi-interface inconnues.
+- Une écoute sur plusieurs interfaces ne déclenche plus d'avertissement générique lorsqu'elle correspond uniquement à un service connu.
+- IPv6 global est classé `OK` lorsque UFW est actif, gère IPv6 et applique une politique entrante `deny` ou `reject`.
+- Un timeout UPnP est classé `INFO` et n'est plus présenté comme un résultat indéterminé.
 - L'affichage des ressources ne publie plus le nom du périphérique de stockage dans le rapport partageable.
 - Le menu principal distingue maintenant les rapports privés et partageables.
 - Le nombre de sections d'audit passe de 6 à 7.
@@ -35,6 +41,7 @@ Toutes les modifications importantes de PatSecure sont décrites dans ce fichier
 - Réduction du risque de publier accidentellement une information réseau exploitable.
 - Aucun appel à un service du type « quelle est mon IP » n'est effectué.
 - La détection UPnP conserve seulement un résultat synthétique et ne stocke pas l'adresse externe annoncée par le routeur.
+- Le diagnostic IPv6 s'appuie sur la configuration réelle d'UFW au lieu de considérer la seule présence d'IPv6 comme une alerte.
 
 ## [0.3.0] — 25 août 2026
 
