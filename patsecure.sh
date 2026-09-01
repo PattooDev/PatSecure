@@ -31,6 +31,10 @@ COUNT_ATTENTION=0
 COUNT_ERREUR=0
 COUNT_INFO=0
 
+UFW_ACTIVE=0
+UFW_IPV6=0
+UFW_DEFAULT_INCOMING="unknown"
+
 clear_screen() {
     if [[ -t 1 && -n "${TERM:-}" ]]; then
         clear
@@ -47,7 +51,6 @@ pause_screen() {
 confirm() {
     local prompt="$1"
     local answer
-
     read -r -p "$prompt [o/N] " answer
     [[ "$answer" =~ ^[oOyY]$ ]]
 }
@@ -139,7 +142,7 @@ start_reports() {
         echo "Utilisateur : ${USER:-inconnu}"
         echo "Machine : $(hostname 2>/dev/null || echo inconnue)"
         echo "Système : $(uname -srmo 2>/dev/null || echo inconnu)"
-        echo ""
+        echo
         echo "Ce rapport privé peut contenir des détails locaux techniques."
         echo "Ne pas le publier sans vérification."
     } > "$PRIVATE_REPORT_FILE"
@@ -147,7 +150,7 @@ start_reports() {
     {
         echo "PatSecure v${VERSION} — Rapport partageable"
         echo "Date : $today"
-        echo ""
+        echo
         echo "Confidentialité :"
         echo "- aucune adresse IP publique n'est interrogée ni enregistrée ;"
         echo "- aucune adresse IP locale n'est copiée dans ce rapport ;"
@@ -212,10 +215,22 @@ audit_updates() {
 }
 
 audit_firewall() {
-    local ufw_output
-    local nft_output
+    local ufw_output=""
+    local nft_output=""
+    local ipv6_setting=""
 
     section "[2/7] Pare-feu"
+
+    UFW_ACTIVE=0
+    UFW_IPV6=0
+    UFW_DEFAULT_INCOMING="unknown"
+
+    if [[ -r /etc/default/ufw ]]; then
+        ipv6_setting="$(grep -E '^IPV6=' /etc/default/ufw 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d '"[:space:]')"
+        if [[ "${ipv6_setting,,}" == "yes" ]]; then
+            UFW_IPV6=1
+        fi
+    fi
 
     if command -v ufw >/dev/null 2>&1; then
         if (( AUDIT_SUDO == 0 )); then
@@ -228,9 +243,29 @@ audit_firewall() {
         private_line "$ufw_output"
 
         if grep -q '^Status: active' <<< "$ufw_output"; then
+            UFW_ACTIVE=1
             result OK "Le pare-feu UFW est actif."
         else
             result ATTENTION "Le pare-feu UFW est inactif ou son état est indéterminé."
+        fi
+
+        if grep -q '^Default: deny (incoming)' <<< "$ufw_output"; then
+            UFW_DEFAULT_INCOMING="deny"
+            result OK "La politique UFW refuse les connexions entrantes par défaut."
+        elif grep -q '^Default: reject (incoming)' <<< "$ufw_output"; then
+            UFW_DEFAULT_INCOMING="reject"
+            result OK "La politique UFW rejette les connexions entrantes par défaut."
+        elif grep -q '^Default: allow (incoming)' <<< "$ufw_output"; then
+            UFW_DEFAULT_INCOMING="allow"
+            result ATTENTION "La politique UFW autorise les connexions entrantes par défaut."
+        else
+            result INFO "La politique entrante par défaut d'UFW n'a pas été déterminée."
+        fi
+
+        if (( UFW_IPV6 == 1 )); then
+            result OK "UFW est configuré pour prendre en charge IPv6."
+        else
+            result ATTENTION "UFW ne semble pas configuré pour prendre en charge IPv6."
         fi
         return
     fi
@@ -295,6 +330,7 @@ audit_listening_ports() {
     local udp_count
     local wildcard_count
     local loopback_count
+    local unknown_wildcard_count
 
     section "[4/7] Ports réseau à l'écoute"
 
@@ -325,10 +361,37 @@ audit_listening_ports() {
     result INFO "$tcp_count écoute(s) TCP et $udp_count écoute(s) UDP détectée(s)."
     result INFO "$loopback_count écoute(s) limitée(s) à la boucle locale détectée(s)."
 
-    if (( wildcard_count > 0 )); then
-        result ATTENTION "$wildcard_count écoute(s) accepte(nt) potentiellement des connexions sur plusieurs interfaces. Cela ne prouve pas une exposition Internet."
-    else
+    if grep -Eq '(^|[[:space:]])[^[:space:]]*:5353([[:space:]]|$).*avahi-daemon|avahi-daemon.*:5353([[:space:]]|$)' <<< "$ports_output"; then
+        result INFO "mDNS/Avahi détecté sur UDP 5353 — service de découverte locale."
+    fi
+
+    if grep -Eq '(^|[[:space:]])[^[:space:]]*:546([[:space:]]|$).*NetworkManager|NetworkManager.*:546([[:space:]]|$)' <<< "$ports_output"; then
+        result INFO "DHCPv6 détecté sur UDP 546 — utilisé par NetworkManager."
+    fi
+
+    if grep -Eq '(^|[[:space:]])[^[:space:]]*:631([[:space:]]|$).*cupsd|cupsd.*:631([[:space:]]|$)' <<< "$ports_output"; then
+        result INFO "CUPS détecté sur TCP 631 — service d'impression."
+    fi
+
+    unknown_wildcard_count="$(
+        awk '
+            ($5 ~ /^0\.0\.0\.0:/ || $5 ~ /^\[::\]:/ || $5 ~ /^\*:/) {
+                line=$0
+                if (line ~ /:5353([^0-9]|$)/ && line ~ /avahi-daemon/) next
+                if (line ~ /:546([^0-9]|$)/ && line ~ /NetworkManager/) next
+                if (line ~ /:631([^0-9]|$)/ && line ~ /cupsd/) next
+                count++
+            }
+            END {print count+0}
+        ' <<< "$ports_output"
+    )"
+
+    if (( wildcard_count == 0 )); then
         result OK "Aucune écoute générique sur toutes les interfaces n'a été repérée."
+    elif (( unknown_wildcard_count == 0 )); then
+        result OK "Les écoutes multi-interface détectées correspondent uniquement à des services connus."
+    else
+        result ATTENTION "$unknown_wildcard_count écoute(s) multi-interface inconnue(s) ou non classée(s) mérite(nt) vérification. Cela ne prouve pas une exposition Internet."
     fi
 
     echo "  Le détail technique reste uniquement dans le rapport privé."
@@ -347,7 +410,15 @@ audit_network_exposure() {
     if command -v ip >/dev/null 2>&1; then
         ipv6_count="$(ip -6 -o addr show scope global 2>/dev/null | wc -l | tr -d ' ')"
         if (( ipv6_count > 0 )); then
-            result ATTENTION "IPv6 global est présent sur au moins une interface ; l'exposition dépend du pare-feu et des services en écoute."
+            if (( UFW_ACTIVE == 1 && UFW_IPV6 == 1 )) && [[ "$UFW_DEFAULT_INCOMING" == "deny" || "$UFW_DEFAULT_INCOMING" == "reject" ]]; then
+                result OK "IPv6 global est présent et couvert par UFW avec une politique entrante restrictive."
+            elif (( UFW_ACTIVE == 1 && UFW_IPV6 == 1 )); then
+                result ATTENTION "IPv6 global est présent et géré par UFW, mais la politique entrante par défaut n'est pas restrictive ou n'a pas été confirmée."
+            elif (( UFW_ACTIVE == 1 )); then
+                result ATTENTION "IPv6 global est présent ; UFW est actif mais sa prise en charge d'IPv6 n'a pas été confirmée."
+            else
+                result ATTENTION "IPv6 global est présent ; son filtrage n'a pas été confirmé par PatSecure."
+            fi
         else
             result INFO "Aucune adresse IPv6 globale n'a été détectée sur les interfaces."
         fi
@@ -370,12 +441,16 @@ audit_network_exposure() {
             fi
         fi
 
-        if grep -qi 'No IGD UPnP Device found' <<< "$upnp_output"; then
+        if (( upnp_status == 124 )); then
+            result INFO "Aucune réponse UPnP reçue dans le délai de 7 secondes ; aucune passerelle UPnP/IGD n'a été confirmée."
+        elif grep -qiE 'No IGD|No valid.*IGD|No UPnP.*found|No.*UPnP.*Device' <<< "$upnp_output"; then
             result OK "Aucune passerelle UPnP/IGD n'a été trouvée sur le réseau local."
-        elif (( upnp_status == 0 )); then
+        elif grep -qiE 'Found valid IGD|InternetGatewayDevice|GetExternalIPAddress|ExternalIPAddress' <<< "$upnp_output"; then
             result ATTENTION "Une passerelle UPnP/IGD répond sur le réseau local. Son adresse externe n'est ni affichée ni enregistrée par PatSecure."
+        elif (( upnp_status == 0 )); then
+            result INFO "Une réponse UPnP a été reçue, mais son format n'a pas permis de confirmer une passerelle IGD."
         else
-            result INFO "La détection UPnP n'a pas permis de conclure."
+            result INFO "Le contrôle UPnP s'est terminé sans résultat exploitable ; aucune adresse externe n'a été affichée ou enregistrée."
         fi
     else
         result INFO "L'outil upnpc n'est pas installé ; la détection active UPnP est ignorée."
@@ -426,6 +501,9 @@ run_audit() {
     COUNT_ATTENTION=0
     COUNT_ERREUR=0
     COUNT_INFO=0
+    UFW_ACTIVE=0
+    UFW_IPV6=0
+    UFW_DEFAULT_INCOMING="unknown"
     PRIVATE_REPORT_FILE=""
     SHARE_REPORT_FILE=""
 
