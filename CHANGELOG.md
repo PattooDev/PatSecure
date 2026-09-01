@@ -2,6 +2,40 @@
 
 Toutes les modifications importantes de PatSecure sont décrites dans ce fichier.
 
+## [0.4.0] — 1er septembre 2026 — En test
+
+### Ajouté
+
+- Création de deux rapports distincts après chaque audit : **privé** et **partageable**.
+- Dossiers séparés `reports/private/` et `reports/shareable/`.
+- Rapport partageable sans adresse IP, adresse MAC, nom de machine ni nom d'utilisateur.
+- Politique explicite : PatSecure n'interroge aucun service externe pour découvrir l'adresse IP publique.
+- Conservation des sorties réseau brutes uniquement dans le rapport privé.
+- Détection des écoutes réseau limitées à la boucle locale.
+- Détection des écoutes génériques acceptant potentiellement des connexions sur plusieurs interfaces.
+- Contrôle de la présence d'IPv6 global sans enregistrer les adresses.
+- Détection UPnP/IGD lorsque `upnpc` est disponible, sans afficher ni enregistrer l'adresse externe.
+- Repli sur nftables lorsque UFW n'est pas installé.
+- Résumé chiffré des résultats `OK`, `ATTENTION`, `ERREUR` et `INFO`.
+- Consultation séparée du dernier rapport privé et du dernier rapport partageable.
+- Options `--last-private-report` et `--last-shareable-report`.
+- Documentation `docs/RAPPORTS.md`.
+
+### Modifié
+
+- Les rapports sont créés avec des permissions restrictives (`600`).
+- Le détail de `dpkg --audit`, UFW, nftables et `ss` n'est plus recopié dans le rapport partageable.
+- L'audit des ports précise qu'une écoute sur plusieurs interfaces ne prouve pas à elle seule une exposition Internet.
+- L'affichage des ressources ne publie plus le nom du périphérique de stockage dans le rapport partageable.
+- Le menu principal distingue maintenant les rapports privés et partageables.
+- Le nombre de sections d'audit passe de 6 à 7.
+
+### Sécurité
+
+- Réduction du risque de publier accidentellement une information réseau exploitable.
+- Aucun appel à un service du type « quelle est mon IP » n'est effectué.
+- La détection UPnP conserve seulement un résultat synthétique et ne stocke pas l'adresse externe annoncée par le routeur.
+
 ## [0.3.0] — 25 août 2026
 
 ### Ajouté
@@ -50,4 +84,3 @@ Toutes les modifications importantes de PatSecure sont décrites dans ce fichier
 - Affichage partiel des ports réseau en écoute.
 
 Cette version mélangeait l'audit et la maintenance. Elle est conservée dans l'historique, mais la v0.3.0 est recommandée.
-
