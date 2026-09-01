@@ -2,7 +2,7 @@
 
 Toutes les modifications importantes de PatSecure sont décrites dans ce fichier.
 
-## [0.4.0] — 1er septembre 2026 — En test
+## [0.4.0] — 1er septembre 2026
 
 ### Ajouté
 
@@ -42,6 +42,8 @@ Toutes les modifications importantes de PatSecure sont décrites dans ce fichier
 - Aucun appel à un service du type « quelle est mon IP » n'est effectué.
 - La détection UPnP conserve seulement un résultat synthétique et ne stocke pas l'adresse externe annoncée par le routeur.
 - Le diagnostic IPv6 s'appuie sur la configuration réelle d'UFW au lieu de considérer la seule présence d'IPv6 comme une alerte.
+- Validation réelle sur Deepin 25 : audit final avec `9 OK`, `0 ATTENTION`, `0 ERREUR`.
+- Validation séparée du rapport partageable : aucun motif IPv4, aucune adresse locale exacte, aucune adresse MAC, aucun nom de machine et aucun nom d'utilisateur détectés.
 
 ## [0.3.0] — 25 août 2026
 
