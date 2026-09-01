@@ -4,7 +4,7 @@
 
 Son objectif est de présenter des contrôles compréhensibles, de ne rien modifier pendant un audit et de demander une confirmation avant chaque opération de maintenance.
 
-## Version en développement
+## Version stable
 
 **PatSecure v0.4.0 — 1er septembre 2026**
 
@@ -28,7 +28,7 @@ La v0.4.0 renforce surtout l'audit réseau et la confidentialité des rapports.
 - prise en compte de nftables lorsque UFW n'est pas disponible ;
 - résumé chiffré des résultats `OK`, `ATTENTION`, `ERREUR` et `INFO`.
 
-La branche stable `main` reste en v0.3.0 jusqu'à validation de cette version.
+La v0.4.0 a été validée sur Deepin 25 avec un audit réel, puis avec un contrôle séparé du rapport partageable afin de vérifier l'absence d'adresses IP, d'adresses MAC, de nom de machine et de nom d'utilisateur.
 
 ## Fonctions de l'audit
 
