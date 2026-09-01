@@ -19,9 +19,12 @@ La v0.4.0 renforce surtout l'audit réseau et la confidentialité des rapports.
 - aucune adresse IP locale, adresse MAC, nom de machine ou nom d'utilisateur recopié dans le rapport partageable ;
 - les sorties brutes de `ss`, UFW, nftables et `dpkg --audit` restent dans le rapport privé ;
 - détection des écoutes réseau sur plusieurs interfaces ;
-- rappel explicite qu'une écoute sur `0.0.0.0` ou `::` ne prouve pas, à elle seule, une exposition Internet ;
+- reconnaissance de services courants comme Avahi/mDNS, DHCPv6/NetworkManager et CUPS ;
+- les services multi-interface connus ne déclenchent plus d'avertissement générique ;
 - détection de la présence d'IPv6 global sans enregistrer les adresses ;
+- vérification de la prise en charge IPv6 par UFW et de la politique entrante par défaut ;
 - détection UPnP/IGD lorsque `upnpc` est installé, sans afficher ni enregistrer l'adresse externe ;
+- diagnostic explicite d'un timeout UPnP ;
 - prise en compte de nftables lorsque UFW n'est pas disponible ;
 - résumé chiffré des résultats `OK`, `ATTENTION`, `ERREUR` et `INFO`.
 
@@ -34,11 +37,14 @@ L'audit vérifie notamment :
 - les mises à jour connues en attente dans le cache APT ;
 - les paquets incomplets signalés par `dpkg` ;
 - l'état du pare-feu UFW ou la présence de règles nftables ;
+- la politique entrante par défaut d'UFW ;
+- la prise en charge IPv6 par UFW ;
 - l'activité éventuelle du serveur SSH ;
 - la présence et l'état de Fail2ban ;
 - les ports TCP et UDP à l'écoute ;
 - les écoutes limitées à la boucle locale ;
 - les écoutes génériques sur plusieurs interfaces ;
+- les services réseau courants reconnus ;
 - la présence d'IPv6 global ;
 - la présence éventuelle d'une passerelle UPnP/IGD si `upnpc` est disponible ;
 - l'utilisation du disque système ;
