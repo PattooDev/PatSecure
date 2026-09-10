@@ -6,29 +6,36 @@ Son objectif est de présenter des contrôles compréhensibles, de ne rien modif
 
 ## Version stable
 
-**PatSecure v0.4.0 — 1er septembre 2026**
+**PatSecure v0.4.1 — 10 septembre 2026**
 
-La v0.4.0 renforce surtout l'audit réseau et la confidentialité des rapports.
+La v0.4.1 améliore surtout la **classification des sockets réseau** afin de réduire les faux avertissements sans masquer les écoutes qui méritent réellement une vérification.
 
 ### Principales nouveautés
 
-- deux rapports distincts après chaque audit :
-  - **rapport privé**, contenant les détails techniques utiles au diagnostic ;
-  - **rapport partageable**, conçu pour GitHub, un site, un forum ou une demande d'aide ;
+- classification des sockets selon le protocole, la portée, le port et le processus associé ;
+- distinction explicite entre **boucle locale**, **interface réseau** et **toutes interfaces** ;
+- une écoute limitée à `127.0.0.1` ou `::1` est classée `OK` ;
+- les usages UDP locaux connus, notamment Avahi/mDNS et DHCPv6/NetworkManager, sont classés `INFO` ;
+- les sockets UDP éphémères associés à un processus identifié sont classés `INFO` ;
+- les écoutes TCP hors boucle locale restent classées `ATTENTION`, sans conclure à une exposition Internet ;
+- les sockets UDP non reconnus et non éphémères restent classés `ATTENTION` ;
+- regroupement des doublons IPv4/IPv6 dans l'affichage synthétique ;
+- deux rapports distincts après chaque audit : **privé** et **partageable** ;
 - aucune interrogation d'un service externe pour connaître l'adresse IP publique ;
 - aucune adresse IP locale, adresse MAC, nom de machine ou nom d'utilisateur recopié dans le rapport partageable ;
 - les sorties brutes de `ss`, UFW, nftables et `dpkg --audit` restent dans le rapport privé ;
-- détection des écoutes réseau sur plusieurs interfaces ;
-- reconnaissance de services courants comme Avahi/mDNS, DHCPv6/NetworkManager et CUPS ;
-- les services multi-interface connus ne déclenchent plus d'avertissement générique ;
-- détection de la présence d'IPv6 global sans enregistrer les adresses ;
 - vérification de la prise en charge IPv6 par UFW et de la politique entrante par défaut ;
 - détection UPnP/IGD lorsque `upnpc` est installé, sans afficher ni enregistrer l'adresse externe ;
-- diagnostic explicite d'un timeout UPnP ;
 - prise en compte de nftables lorsque UFW n'est pas disponible ;
 - résumé chiffré des résultats `OK`, `ATTENTION`, `ERREUR` et `INFO`.
 
-La v0.4.0 a été validée sur Deepin 25 avec un audit réel, puis avec un contrôle séparé du rapport partageable afin de vérifier l'absence d'adresses IP, d'adresses MAC, de nom de machine et de nom d'utilisateur.
+La v0.4.1 a été validée sur **Deepin 25** avec :
+
+- tests unitaires du classificateur : `11 PASS, 0 FAIL` ;
+- test réseau réel : `OK=5`, `INFO=3`, `ATTENTION=0`, `ERREUR=0` ;
+- audit complet : `12 OK`, `12 INFO`, `0 ATTENTION`, `0 ERREUR`.
+
+PatSecure ne déduit jamais une exposition Internet à partir de `ss` seul. Une écoute sur `0.0.0.0` ou `[::]` décrit une écoute sur la machine ; elle ne prouve pas que le routeur ou le pare-feu autorise un accès depuis Internet.
 
 ## Fonctions de l'audit
 
@@ -41,10 +48,11 @@ L'audit vérifie notamment :
 - la prise en charge IPv6 par UFW ;
 - l'activité éventuelle du serveur SSH ;
 - la présence et l'état de Fail2ban ;
-- les ports TCP et UDP à l'écoute ;
+- les sockets TCP et UDP à l'écoute ;
 - les écoutes limitées à la boucle locale ;
-- les écoutes génériques sur plusieurs interfaces ;
+- les écoutes sur une interface ou sur toutes les interfaces ;
 - les services réseau courants reconnus ;
+- les sockets UDP éphémères associés à un processus identifié ;
 - la présence d'IPv6 global ;
 - la présence éventuelle d'une passerelle UPnP/IGD si `upnpc` est disponible ;
 - l'utilisation du disque système ;
@@ -167,7 +175,9 @@ Afficher le dernier rapport partageable :
 - `patsecure-launcher.sh` : lanceur compatible avec Deepin Terminal ;
 - `CHANGELOG.md` : historique des versions ;
 - `docs/INSTALL.md` : installation ;
-- `docs/RAPPORTS.md` : confidentialité et utilisation des rapports.
+- `docs/RAPPORTS.md` : confidentialité et utilisation des rapports ;
+- `tests/` : tests du classificateur réseau ;
+- `scripts/network-classifier-v0.4.1.sh` : moteur isolé utilisé pour les tests et la validation.
 
 ## Limites
 
