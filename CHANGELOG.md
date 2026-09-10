@@ -2,6 +2,33 @@
 
 Toutes les modifications importantes de PatSecure sont décrites dans ce fichier.
 
+## [0.4.1] — 10 septembre 2026
+
+### Ajouté
+
+- Classification des sockets réseau selon le protocole, la portée, le port et le processus associé.
+- Distinction explicite entre boucle locale, interface réseau et écoute sur toutes les interfaces.
+- Reconnaissance des sockets UDP éphémères associés à un processus identifié.
+- Regroupement des doublons IPv4/IPv6 équivalents dans l'affichage synthétique.
+- Tests automatiques du moteur de classification réseau.
+- Test réel en lecture seule sur les sockets de la machine, sans affichage d'adresse IP.
+
+### Modifié
+
+- Une écoute limitée à `127.0.0.1` ou `::1` est classée `OK`.
+- Les usages UDP locaux connus, notamment Avahi/mDNS et DHCPv6/NetworkManager, sont classés `INFO`.
+- Un socket UDP éphémère d'un processus identifié est classé `INFO` au lieu d'être assimilé à un service permanent.
+- Une écoute TCP hors boucle locale est classée `ATTENTION` et décrite comme potentiellement joignable depuis le réseau local, sans conclure à une exposition Internet.
+- Un socket UDP non reconnu et non éphémère reste classé `ATTENTION`.
+- Les sorties brutes de `ss` restent exclusivement dans le rapport privé ; le rapport partageable ne contient que des descriptions synthétiques sans adresse IP.
+
+### Sécurité
+
+- PatSecure ne déduit jamais une exposition Internet à partir de `ss` seul.
+- La mention « toutes interfaces » décrit l'écoute sur la machine et ne signifie pas que le routeur ou le pare-feu autorise un accès depuis Internet.
+- Validation unitaire sur Deepin 25 : `11 PASS, 0 FAIL`.
+- Validation réseau réelle sur Deepin 25 : `OK=5`, `INFO=3`, `ATTENTION=0`, `ERREUR=0` avant regroupement des doublons IPv4/IPv6.
+
 ## [0.4.0] — 1er septembre 2026
 
 ### Ajouté

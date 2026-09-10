@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 
 # ==========================================================
-# PatSecure v0.4.0
+# PatSecure v0.4.1
 # Audit de sécurité et maintenance pour Deepin Linux
 # ==========================================================
 
 set -u
 umask 077
 
-VERSION="0.4.0"
+VERSION="0.4.1"
 
 VERT="\e[32m"
 ROUGE="\e[31m"
@@ -226,7 +226,7 @@ audit_firewall() {
     UFW_DEFAULT_INCOMING="unknown"
 
     if [[ -r /etc/default/ufw ]]; then
-        ipv6_setting="$(grep -E '^IPV6=' /etc/default/ufw 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d '"[:space:]')"
+        ipv6_setting="$(grep -E '^IPV6=' /etc/default/ufw 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d '\"[:space:]')"
         if [[ "${ipv6_setting,,}" == "yes" ]]; then
             UFW_IPV6=1
         fi
@@ -324,13 +324,154 @@ audit_services() {
     fi
 }
 
+# ----------------------------------------------------------
+# Classification réseau v0.4.1
+# ----------------------------------------------------------
+
+patsecure_endpoint_port() {
+    local endpoint="${1:-}"
+    printf '%s\n' "${endpoint##*:}"
+}
+
+patsecure_socket_scope() {
+    local endpoint="${1:-}"
+
+    case "$endpoint" in
+        127.*:*|\[::1\]:*) printf '%s\n' "loopback" ;;
+        0.0.0.0:*|\[::\]:*|\*:*) printf '%s\n' "all-interfaces" ;;
+        *) printf '%s\n' "interface" ;;
+    esac
+}
+
+patsecure_ephemeral_range() {
+    local low high
+
+    if read -r low high < /proc/sys/net/ipv4/ip_local_port_range 2>/dev/null \
+        && [[ "$low" =~ ^[0-9]+$ && "$high" =~ ^[0-9]+$ ]]; then
+        printf '%s %s\n' "$low" "$high"
+    else
+        printf '%s %s\n' "32768" "60999"
+    fi
+}
+
+patsecure_is_ephemeral_port() {
+    local port="${1:-}"
+    local low high
+
+    [[ "$port" =~ ^[0-9]+$ ]] || return 1
+    read -r low high < <(patsecure_ephemeral_range)
+    (( port >= low && port <= high ))
+}
+
+patsecure_process_is_known_udp_client() {
+    local process="${1:-}"
+
+    case "$process" in
+        firefox|firefox-bin|chrome|chrome-bin|chromium|chromium-browse|chromium-browser|brave|brave-browser|systemd-timesyncd|NetworkManager)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+patsecure_process_is_known_local_udp_service() {
+    local process="${1:-}"
+    local port="${2:-}"
+
+    [[ "$process" == "avahi-daemon" && "$port" == "5353" ]] && return 0
+    [[ "$process" == "NetworkManager" && "$port" == "546" ]] && return 0
+    return 1
+}
+
+patsecure_classify_socket() {
+    local protocol="${1:-}"
+    local state="${2:-}"
+    local local_endpoint="${3:-}"
+    local process="${4:-inconnu}"
+    local port scope
+
+    protocol="${protocol,,}"
+    port="$(patsecure_endpoint_port "$local_endpoint")"
+    scope="$(patsecure_socket_scope "$local_endpoint")"
+    [[ -n "$process" ]] || process="inconnu"
+
+    if [[ "$scope" == "loopback" ]]; then
+        printf 'OK|%s|%s|%s|%s\n' "$scope" "$port" "$process" \
+            "écoute limitée à la boucle locale"
+        return 0
+    fi
+
+    if [[ "$protocol" == "udp" && "$process" != "inconnu" ]] \
+        && patsecure_is_ephemeral_port "$port"; then
+        printf 'INFO|%s|%s|%s|%s\n' "$scope" "$port" "$process" \
+            "socket UDP éphémère associé à un processus identifié"
+        return 0
+    fi
+
+    if [[ "$protocol" == "udp" ]] \
+        && patsecure_process_is_known_local_udp_service "$process" "$port"; then
+        printf 'INFO|%s|%s|%s|%s\n' "$scope" "$port" "$process" \
+            "service UDP local connu"
+        return 0
+    fi
+
+    if [[ "$protocol" == "udp" ]] \
+        && patsecure_process_is_known_udp_client "$process"; then
+        printf 'INFO|%s|%s|%s|%s\n' "$scope" "$port" "$process" \
+            "socket UDP d'un programme client identifié"
+        return 0
+    fi
+
+    if [[ "$protocol" == "tcp" && "$state" == "LISTEN" ]]; then
+        printf 'ATTENTION|%s|%s|%s|%s\n' "$scope" "$port" "$process" \
+            "service TCP à l'écoute hors boucle locale ; cela ne prouve pas une exposition Internet"
+        return 0
+    fi
+
+    if [[ "$protocol" == "udp" ]]; then
+        if [[ "$process" == "inconnu" ]]; then
+            printf 'ATTENTION|%s|%s|%s|%s\n' "$scope" "$port" "$process" \
+                "socket UDP non classé sans processus identifié"
+        else
+            printf 'ATTENTION|%s|%s|%s|%s\n' "$scope" "$port" "$process" \
+                "socket UDP non éphémère non classé ; vérifier s'il s'agit d'un service permanent"
+        fi
+        return 0
+    fi
+
+    printf 'INFO|%s|%s|%s|%s\n' "$scope" "$port" "$process" \
+        "socket réseau non classé"
+}
+
+patsecure_process_from_ss_line() {
+    local line="${1:-}"
+    local process
+
+    process="$(sed -n 's/.*users:(("\([^"]*\)".*/\1/p' <<< "$line")"
+    if [[ -n "$process" ]]; then
+        printf '%s\n' "$process"
+    else
+        printf '%s\n' "inconnu"
+    fi
+}
+
+patsecure_scope_label() {
+    case "${1:-}" in
+        loopback) printf '%s\n' "boucle locale" ;;
+        all-interfaces) printf '%s\n' "toutes interfaces" ;;
+        interface) printf '%s\n' "interface réseau" ;;
+        *) printf '%s\n' "portée inconnue" ;;
+    esac
+}
+
 audit_listening_ports() {
     local ports_output
-    local tcp_count
-    local udp_count
-    local wildcard_count
-    local loopback_count
-    local unknown_wildcard_count
+    local tcp_count udp_count raw_count unique_count
+    local line protocol state local_endpoint process classification
+    local level scope port reason scope_label key
+    declare -A seen=()
 
     section "[4/7] Ports réseau à l'écoute"
 
@@ -350,51 +491,44 @@ audit_listening_ports() {
         return
     fi
 
-    private_line "Détail des ports à l'écoute :"
+    private_line "Détail brut des sockets réseau (rapport privé uniquement) :"
     private_line "$ports_output"
 
     tcp_count="$(awk '$1 == "tcp" {count++} END {print count+0}' <<< "$ports_output")"
     udp_count="$(awk '$1 == "udp" {count++} END {print count+0}' <<< "$ports_output")"
-    wildcard_count="$(awk '$5 ~ /^0\.0\.0\.0:/ || $5 ~ /^\[::\]:/ || $5 ~ /^\*:/ {count++} END {print count+0}' <<< "$ports_output")"
-    loopback_count="$(awk '$5 ~ /^127\./ || $5 ~ /^\[::1\]:/ {count++} END {print count+0}' <<< "$ports_output")"
+    raw_count=$(( tcp_count + udp_count ))
 
-    result INFO "$tcp_count écoute(s) TCP et $udp_count écoute(s) UDP détectée(s)."
-    result INFO "$loopback_count écoute(s) limitée(s) à la boucle locale détectée(s)."
+    result INFO "$tcp_count socket(s) TCP et $udp_count socket(s) UDP détecté(s)."
 
-    if grep -Eq '(^|[[:space:]])[^[:space:]]*:5353([[:space:]]|$).*avahi-daemon|avahi-daemon.*:5353([[:space:]]|$)' <<< "$ports_output"; then
-        result INFO "mDNS/Avahi détecté sur UDP 5353 — service de découverte locale."
+    unique_count=0
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+
+        protocol="$(awk '{print $1}' <<< "$line")"
+        state="$(awk '{print $2}' <<< "$line")"
+        local_endpoint="$(awk '{print $5}' <<< "$line")"
+        process="$(patsecure_process_from_ss_line "$line")"
+
+        classification="$(patsecure_classify_socket "$protocol" "$state" "$local_endpoint" "$process")"
+        IFS='|' read -r level scope port process reason <<< "$classification"
+
+        key="${protocol,,}|$level|$scope|$port|$process|$reason"
+        if [[ -n "${seen[$key]+x}" ]]; then
+            continue
+        fi
+        seen[$key]=1
+        ((unique_count+=1))
+
+        scope_label="$(patsecure_scope_label "$scope")"
+        result "$level" "${protocol^^} $port — $process — $scope_label — $reason."
+    done <<< "$ports_output"
+
+    if (( raw_count > unique_count )); then
+        result INFO "$((raw_count - unique_count)) socket(s) IPv4/IPv6 redondant(s) regroupé(s) dans l'affichage."
     fi
 
-    if grep -Eq '(^|[[:space:]])[^[:space:]]*:546([[:space:]]|$).*NetworkManager|NetworkManager.*:546([[:space:]]|$)' <<< "$ports_output"; then
-        result INFO "DHCPv6 détecté sur UDP 546 — utilisé par NetworkManager."
-    fi
-
-    if grep -Eq '(^|[[:space:]])[^[:space:]]*:631([[:space:]]|$).*cupsd|cupsd.*:631([[:space:]]|$)' <<< "$ports_output"; then
-        result INFO "CUPS détecté sur TCP 631 — service d'impression."
-    fi
-
-    unknown_wildcard_count="$(
-        awk '
-            ($5 ~ /^0\.0\.0\.0:/ || $5 ~ /^\[::\]:/ || $5 ~ /^\*:/) {
-                line=$0
-                if (line ~ /:5353([^0-9]|$)/ && line ~ /avahi-daemon/) next
-                if (line ~ /:546([^0-9]|$)/ && line ~ /NetworkManager/) next
-                if (line ~ /:631([^0-9]|$)/ && line ~ /cupsd/) next
-                count++
-            }
-            END {print count+0}
-        ' <<< "$ports_output"
-    )"
-
-    if (( wildcard_count == 0 )); then
-        result OK "Aucune écoute générique sur toutes les interfaces n'a été repérée."
-    elif (( unknown_wildcard_count == 0 )); then
-        result OK "Les écoutes multi-interface détectées correspondent uniquement à des services connus."
-    else
-        result ATTENTION "$unknown_wildcard_count écoute(s) multi-interface inconnue(s) ou non classée(s) mérite(nt) vérification. Cela ne prouve pas une exposition Internet."
-    fi
-
-    echo "  Le détail technique reste uniquement dans le rapport privé."
+    result INFO "La mention « toutes interfaces » signifie une écoute sur la machine ; elle ne démontre pas une accessibilité depuis Internet."
+    echo "  Les adresses exactes et la sortie brute de ss restent uniquement dans le rapport privé."
 }
 
 audit_network_exposure() {
