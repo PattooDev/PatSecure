@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 
 # ==========================================================
-# PatSecure v0.4.1
+# PatSecure v0.4.2
 # Audit de sécurité et maintenance pour Deepin Linux
 # ==========================================================
 
 set -u
 umask 077
 
-VERSION="0.4.1"
+VERSION="0.4.2"
 
 VERT="\e[32m"
 ROUGE="\e[31m"
@@ -179,18 +179,90 @@ prepare_read_only_sudo() {
     fi
 }
 
+patsecure_count_upgradable_lines() {
+    LC_ALL=C awk -F/ 'NF >= 2 && $1 !~ /^[[:space:]]*Listing/ {count++} END {print count+0}'
+}
+
+patsecure_apt_upgradable_count() {
+    if ! command -v apt >/dev/null 2>&1; then
+        printf '%s\n' "-1"
+        return 0
+    fi
+
+    LC_ALL=C apt list --upgradable 2>/dev/null | patsecure_count_upgradable_lines
+}
+
+patsecure_apt_cache_latest_mtime() {
+    local lists_dir="${1:-/var/lib/apt/lists}"
+    local file mtime latest=0
+
+    [[ -d "$lists_dir" ]] || {
+        printf '%s\n' "0"
+        return 0
+    }
+
+    while IFS= read -r -d '' file; do
+        mtime="$(stat -c '%Y' -- "$file" 2>/dev/null || true)"
+        [[ "$mtime" =~ ^[0-9]+$ ]] || continue
+        (( mtime > latest )) && latest="$mtime"
+    done < <(
+        find "$lists_dir" -maxdepth 1 -type f \
+            \( -name '*InRelease' -o -name '*Release' \) -print0 2>/dev/null
+    )
+
+    printf '%s\n' "$latest"
+}
+
+patsecure_apt_cache_age_hours() {
+    local lists_dir="${1:-/var/lib/apt/lists}"
+    local latest now age
+
+    latest="$(patsecure_apt_cache_latest_mtime "$lists_dir")"
+    [[ "$latest" =~ ^[0-9]+$ ]] || latest=0
+
+    if (( latest <= 0 )); then
+        printf '%s\n' "-1"
+        return 0
+    fi
+
+    now="$(date +%s 2>/dev/null || printf '0')"
+    [[ "$now" =~ ^[0-9]+$ ]] || now=0
+
+    if (( now < latest )); then
+        printf '%s\n' "0"
+        return 0
+    fi
+
+    age=$(( (now - latest) / 3600 ))
+    printf '%s\n' "$age"
+}
+
 audit_updates() {
     local count
+    local cache_age
     local dpkg_output
 
     section "[1/7] Mises à jour et paquets"
 
     if command -v apt >/dev/null 2>&1; then
-        count="$(apt list --upgradable 2>/dev/null | sed '1d' | awk 'NF' | wc -l | tr -d ' ')"
+        count="$(patsecure_apt_upgradable_count)"
         if [[ "$count" == "0" ]]; then
             result OK "Aucune mise à jour connue en attente dans le cache APT actuel."
-        else
+        elif [[ "$count" =~ ^[0-9]+$ ]]; then
             result ATTENTION "$count mise(s) à jour connue(s) en attente dans le cache APT actuel."
+        else
+            result ATTENTION "Le nombre de mises à jour APT n'a pas pu être déterminé."
+        fi
+
+        cache_age="$(patsecure_apt_cache_age_hours)"
+        if [[ "$cache_age" == "-1" ]]; then
+            result INFO "L'âge des index APT n'a pas pu être déterminé ; le résultat ci-dessus dépend du cache local disponible."
+        elif (( cache_age > 168 )); then
+            result ATTENTION "Les index APT semblent dater de plus de 7 jours (${cache_age} h environ) ; lancer « apt update » en mode maintenance pour vérifier les mises à jour réelles."
+        elif (( cache_age > 48 )); then
+            result INFO "Les index APT datent d'environ ${cache_age} h ; le résultat reste basé sur ce cache local."
+        else
+            result OK "Les index APT sont récents (${cache_age} h environ)."
         fi
     else
         result ERREUR "La commande apt est introuvable."
@@ -810,28 +882,30 @@ main_menu() {
     done
 }
 
-case "${1:-}" in
-    --audit)
-        run_audit
-        ;;
-    --last-private-report)
-        show_last_report private
-        ;;
-    --last-shareable-report)
-        show_last_report shareable
-        ;;
-    --version)
-        echo "PatSecure v${VERSION}"
-        ;;
-    --help|-h)
-        echo "Utilisation : $0 [--audit|--last-private-report|--last-shareable-report|--version|--help]"
-        ;;
-    "")
-        main_menu
-        ;;
-    *)
-        echo "Option inconnue : $1" >&2
-        echo "Utilisation : $0 [--audit|--last-private-report|--last-shareable-report|--version|--help]" >&2
-        exit 2
-        ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    case "${1:-}" in
+        --audit)
+            run_audit
+            ;;
+        --last-private-report)
+            show_last_report private
+            ;;
+        --last-shareable-report)
+            show_last_report shareable
+            ;;
+        --version)
+            echo "PatSecure v${VERSION}"
+            ;;
+        --help|-h)
+            echo "Utilisation : $0 [--audit|--last-private-report|--last-shareable-report|--version|--help]"
+            ;;
+        "")
+            main_menu
+            ;;
+        *)
+            echo "Option inconnue : $1" >&2
+            echo "Utilisation : $0 [--audit|--last-private-report|--last-shareable-report|--version|--help]" >&2
+            exit 2
+            ;;
+    esac
+fi
