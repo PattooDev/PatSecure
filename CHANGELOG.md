@@ -2,7 +2,7 @@
 
 Toutes les modifications importantes de PatSecure sont décrites dans ce fichier.
 
-## [0.4.2-dev] — en préparation
+## [0.4.2] — 20 septembre 2026
 
 ### Ajouté
 
