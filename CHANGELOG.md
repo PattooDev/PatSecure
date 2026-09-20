@@ -2,6 +2,25 @@
 
 Toutes les modifications importantes de PatSecure sont décrites dans ce fichier.
 
+## [0.4.2-dev] — en préparation
+
+### Ajouté
+
+- Contrôle de l'âge approximatif des index APT, sans lancer de requête réseau pendant l'audit.
+- Test automatique du comptage des mises à jour et de la détection d'un cache APT récent, absent ou ancien.
+
+### Modifié
+
+- Le comptage de `apt list --upgradable` ne dépend plus du texte d'en-tête ni de la langue d'affichage.
+- Un cache APT de plus de 7 jours est signalé `ATTENTION` afin d'éviter de confondre « aucune mise à jour connue » avec « cache trop ancien ».
+- Entre 48 h et 7 jours, l'âge du cache est indiqué en `INFO` ; jusqu'à 48 h, il est classé `OK`.
+- `patsecure.sh` peut désormais être sourcé par les tests sans ouvrir le menu interactif.
+
+### Sécurité
+
+- Le mode audit reste strictement en lecture seule : aucun `apt update`, aucune installation et aucune modification du système.
+- Le rapport partageable n'ajoute aucune adresse IP, adresse MAC, nom de machine ou autre donnée réseau exploitable.
+
 ## [0.4.1] — 10 septembre 2026
 
 ### Ajouté
