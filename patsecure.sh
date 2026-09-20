@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 
 # ==========================================================
-# PatSecure v0.4.2-dev
+# PatSecure v0.4.2
 # Audit de sécurité et maintenance pour Deepin Linux
 # ==========================================================
 
 set -u
 umask 077
 
-VERSION="0.4.2-dev"
+VERSION="0.4.2"
 
 VERT="\e[32m"
 ROUGE="\e[31m"
