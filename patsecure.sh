@@ -179,20 +179,24 @@ prepare_read_only_sudo() {
     fi
 }
 
+patsecure_count_upgradable_lines() {
+    LC_ALL=C awk -F/ 'NF >= 2 && $1 !~ /^[[:space:]]*Listing/ {count++} END {print count+0}'
+}
+
 patsecure_apt_upgradable_count() {
     if ! command -v apt >/dev/null 2>&1; then
         printf '%s\n' "-1"
         return 0
     fi
 
-    LC_ALL=C apt list --upgradable 2>/dev/null \
-        | awk -F/ 'NF >= 2 && $1 !~ /^[[:space:]]*Listing/ {count++} END {print count+0}'
+    LC_ALL=C apt list --upgradable 2>/dev/null | patsecure_count_upgradable_lines
 }
 
 patsecure_apt_cache_latest_mtime() {
+    local lists_dir="${1:-/var/lib/apt/lists}"
     local file mtime latest=0
 
-    [[ -d /var/lib/apt/lists ]] || {
+    [[ -d "$lists_dir" ]] || {
         printf '%s\n' "0"
         return 0
     }
@@ -202,7 +206,7 @@ patsecure_apt_cache_latest_mtime() {
         [[ "$mtime" =~ ^[0-9]+$ ]] || continue
         (( mtime > latest )) && latest="$mtime"
     done < <(
-        find /var/lib/apt/lists -maxdepth 1 -type f \
+        find "$lists_dir" -maxdepth 1 -type f \
             \( -name '*InRelease' -o -name '*Release' \) -print0 2>/dev/null
     )
 
@@ -210,9 +214,10 @@ patsecure_apt_cache_latest_mtime() {
 }
 
 patsecure_apt_cache_age_hours() {
+    local lists_dir="${1:-/var/lib/apt/lists}"
     local latest now age
 
-    latest="$(patsecure_apt_cache_latest_mtime)"
+    latest="$(patsecure_apt_cache_latest_mtime "$lists_dir")"
     [[ "$latest" =~ ^[0-9]+$ ]] || latest=0
 
     if (( latest <= 0 )); then
@@ -525,380 +530,382 @@ patsecure_process_from_ss_line() {
 }
 
 patsecure_scope_label() {
+    if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     case "${1:-}" in
-        loopback) printf '%s\n' "boucle locale" ;;
-        all-interfaces) printf '%s\n' "toutes interfaces" ;;
-        interface) printf '%s\n' "interface réseau" ;;
-        *) printf '%s\n' "portée inconnue" ;;
-    esac
-}
-
-audit_listening_ports() {
-    local ports_output
-    local tcp_count udp_count raw_count unique_count
-    local line protocol state local_endpoint process classification
-    local level scope port reason scope_label key
-    declare -A seen=()
-
-    section "[4/7] Ports réseau à l'écoute"
-
-    if ! command -v ss >/dev/null 2>&1; then
-        result ERREUR "La commande ss est introuvable."
-        return
-    fi
-
-    if (( AUDIT_SUDO == 1 )); then
-        ports_output="$(sudo ss -tulpnH 2>&1)"
-    else
-        ports_output="$(ss -tulnH 2>&1)"
-    fi
-
-    if [[ -z "$ports_output" ]]; then
-        result OK "Aucun port TCP ou UDP à l'écoute n'a été détecté."
-        return
-    fi
-
-    private_line "Détail brut des sockets réseau (rapport privé uniquement) :"
-    private_line "$ports_output"
-
-    tcp_count="$(awk '$1 == "tcp" {count++} END {print count+0}' <<< "$ports_output")"
-    udp_count="$(awk '$1 == "udp" {count++} END {print count+0}' <<< "$ports_output")"
-    raw_count=$(( tcp_count + udp_count ))
-
-    result INFO "$tcp_count socket(s) TCP et $udp_count socket(s) UDP détecté(s)."
-
-    unique_count=0
-    while IFS= read -r line; do
-        [[ -n "$line" ]] || continue
-
-        protocol="$(awk '{print $1}' <<< "$line")"
-        state="$(awk '{print $2}' <<< "$line")"
-        local_endpoint="$(awk '{print $5}' <<< "$line")"
-        process="$(patsecure_process_from_ss_line "$line")"
-
-        classification="$(patsecure_classify_socket "$protocol" "$state" "$local_endpoint" "$process")"
-        IFS='|' read -r level scope port process reason <<< "$classification"
-
-        key="${protocol,,}|$level|$scope|$port|$process|$reason"
-        if [[ -n "${seen[$key]+x}" ]]; then
-            continue
+            loopback) printf '%s\n' "boucle locale" ;;
+            all-interfaces) printf '%s\n' "toutes interfaces" ;;
+            interface) printf '%s\n' "interface réseau" ;;
+            *) printf '%s\n' "portée inconnue" ;;
+        esac
+    }
+    
+    audit_listening_ports() {
+        local ports_output
+        local tcp_count udp_count raw_count unique_count
+        local line protocol state local_endpoint process classification
+        local level scope port reason scope_label key
+        declare -A seen=()
+    
+        section "[4/7] Ports réseau à l'écoute"
+    
+        if ! command -v ss >/dev/null 2>&1; then
+            result ERREUR "La commande ss est introuvable."
+            return
         fi
-        seen[$key]=1
-        ((unique_count+=1))
-
-        scope_label="$(patsecure_scope_label "$scope")"
-        result "$level" "${protocol^^} $port — $process — $scope_label — $reason."
-    done <<< "$ports_output"
-
-    if (( raw_count > unique_count )); then
-        result INFO "$((raw_count - unique_count)) socket(s) IPv4/IPv6 redondant(s) regroupé(s) dans l'affichage."
-    fi
-
-    result INFO "La mention « toutes interfaces » signifie une écoute sur la machine ; elle ne démontre pas une accessibilité depuis Internet."
-    echo "  Les adresses exactes et la sortie brute de ss restent uniquement dans le rapport privé."
-}
-
-audit_network_exposure() {
-    local ipv6_count
-    local upnp_output=""
-    local upnp_status=2
-
-    section "[5/7] Exposition réseau et confidentialité"
-
-    result OK "PatSecure n'interroge aucun service externe pour connaître l'adresse IP publique."
-    result OK "Le rapport partageable exclut les adresses IP, les adresses MAC, le nom de machine et le nom d'utilisateur."
-
-    if command -v ip >/dev/null 2>&1; then
-        ipv6_count="$(ip -6 -o addr show scope global 2>/dev/null | wc -l | tr -d ' ')"
-        if (( ipv6_count > 0 )); then
-            if (( UFW_ACTIVE == 1 && UFW_IPV6 == 1 )) && [[ "$UFW_DEFAULT_INCOMING" == "deny" || "$UFW_DEFAULT_INCOMING" == "reject" ]]; then
-                result OK "IPv6 global est présent et couvert par UFW avec une politique entrante restrictive."
-            elif (( UFW_ACTIVE == 1 && UFW_IPV6 == 1 )); then
-                result ATTENTION "IPv6 global est présent et géré par UFW, mais la politique entrante par défaut n'est pas restrictive ou n'a pas été confirmée."
-            elif (( UFW_ACTIVE == 1 )); then
-                result ATTENTION "IPv6 global est présent ; UFW est actif mais sa prise en charge d'IPv6 n'a pas été confirmée."
+    
+        if (( AUDIT_SUDO == 1 )); then
+            ports_output="$(sudo ss -tulpnH 2>&1)"
+        else
+            ports_output="$(ss -tulnH 2>&1)"
+        fi
+    
+        if [[ -z "$ports_output" ]]; then
+            result OK "Aucun port TCP ou UDP à l'écoute n'a été détecté."
+            return
+        fi
+    
+        private_line "Détail brut des sockets réseau (rapport privé uniquement) :"
+        private_line "$ports_output"
+    
+        tcp_count="$(awk '$1 == "tcp" {count++} END {print count+0}' <<< "$ports_output")"
+        udp_count="$(awk '$1 == "udp" {count++} END {print count+0}' <<< "$ports_output")"
+        raw_count=$(( tcp_count + udp_count ))
+    
+        result INFO "$tcp_count socket(s) TCP et $udp_count socket(s) UDP détecté(s)."
+    
+        unique_count=0
+        while IFS= read -r line; do
+            [[ -n "$line" ]] || continue
+    
+            protocol="$(awk '{print $1}' <<< "$line")"
+            state="$(awk '{print $2}' <<< "$line")"
+            local_endpoint="$(awk '{print $5}' <<< "$line")"
+            process="$(patsecure_process_from_ss_line "$line")"
+    
+            classification="$(patsecure_classify_socket "$protocol" "$state" "$local_endpoint" "$process")"
+            IFS='|' read -r level scope port process reason <<< "$classification"
+    
+            key="${protocol,,}|$level|$scope|$port|$process|$reason"
+            if [[ -n "${seen[$key]+x}" ]]; then
+                continue
+            fi
+            seen[$key]=1
+            ((unique_count+=1))
+    
+            scope_label="$(patsecure_scope_label "$scope")"
+            result "$level" "${protocol^^} $port — $process — $scope_label — $reason."
+        done <<< "$ports_output"
+    
+        if (( raw_count > unique_count )); then
+            result INFO "$((raw_count - unique_count)) socket(s) IPv4/IPv6 redondant(s) regroupé(s) dans l'affichage."
+        fi
+    
+        result INFO "La mention « toutes interfaces » signifie une écoute sur la machine ; elle ne démontre pas une accessibilité depuis Internet."
+        echo "  Les adresses exactes et la sortie brute de ss restent uniquement dans le rapport privé."
+    }
+    
+    audit_network_exposure() {
+        local ipv6_count
+        local upnp_output=""
+        local upnp_status=2
+    
+        section "[5/7] Exposition réseau et confidentialité"
+    
+        result OK "PatSecure n'interroge aucun service externe pour connaître l'adresse IP publique."
+        result OK "Le rapport partageable exclut les adresses IP, les adresses MAC, le nom de machine et le nom d'utilisateur."
+    
+        if command -v ip >/dev/null 2>&1; then
+            ipv6_count="$(ip -6 -o addr show scope global 2>/dev/null | wc -l | tr -d ' ')"
+            if (( ipv6_count > 0 )); then
+                if (( UFW_ACTIVE == 1 && UFW_IPV6 == 1 )) && [[ "$UFW_DEFAULT_INCOMING" == "deny" || "$UFW_DEFAULT_INCOMING" == "reject" ]]; then
+                    result OK "IPv6 global est présent et couvert par UFW avec une politique entrante restrictive."
+                elif (( UFW_ACTIVE == 1 && UFW_IPV6 == 1 )); then
+                    result ATTENTION "IPv6 global est présent et géré par UFW, mais la politique entrante par défaut n'est pas restrictive ou n'a pas été confirmée."
+                elif (( UFW_ACTIVE == 1 )); then
+                    result ATTENTION "IPv6 global est présent ; UFW est actif mais sa prise en charge d'IPv6 n'a pas été confirmée."
+                else
+                    result ATTENTION "IPv6 global est présent ; son filtrage n'a pas été confirmé par PatSecure."
+                fi
             else
-                result ATTENTION "IPv6 global est présent ; son filtrage n'a pas été confirmé par PatSecure."
+                result INFO "Aucune adresse IPv6 globale n'a été détectée sur les interfaces."
             fi
         else
-            result INFO "Aucune adresse IPv6 globale n'a été détectée sur les interfaces."
+            result INFO "La commande ip est introuvable ; contrôle IPv6 ignoré."
         fi
-    else
-        result INFO "La commande ip est introuvable ; contrôle IPv6 ignoré."
-    fi
-
-    if command -v upnpc >/dev/null 2>&1; then
-        if command -v timeout >/dev/null 2>&1; then
-            if upnp_output="$(timeout 7 upnpc -l 2>&1)"; then
-                upnp_status=0
+    
+        if command -v upnpc >/dev/null 2>&1; then
+            if command -v timeout >/dev/null 2>&1; then
+                if upnp_output="$(timeout 7 upnpc -l 2>&1)"; then
+                    upnp_status=0
+                else
+                    upnp_status=$?
+                fi
             else
-                upnp_status=$?
+                if upnp_output="$(upnpc -l 2>&1)"; then
+                    upnp_status=0
+                else
+                    upnp_status=$?
+                fi
+            fi
+    
+            if (( upnp_status == 124 )); then
+                result INFO "Aucune réponse UPnP reçue dans le délai de 7 secondes ; aucune passerelle UPnP/IGD n'a été confirmée."
+            elif grep -qiE 'No IGD|No valid.*IGD|No UPnP.*found|No.*UPnP.*Device' <<< "$upnp_output"; then
+                result OK "Aucune passerelle UPnP/IGD n'a été trouvée sur le réseau local."
+            elif grep -qiE 'Found valid IGD|InternetGatewayDevice|GetExternalIPAddress|ExternalIPAddress' <<< "$upnp_output"; then
+                result ATTENTION "Une passerelle UPnP/IGD répond sur le réseau local. Son adresse externe n'est ni affichée ni enregistrée par PatSecure."
+            elif (( upnp_status == 0 )); then
+                result INFO "Une réponse UPnP a été reçue, mais son format n'a pas permis de confirmer une passerelle IGD."
+            else
+                result INFO "Le contrôle UPnP s'est terminé sans résultat exploitable ; aucune adresse externe n'a été affichée ou enregistrée."
             fi
         else
-            if upnp_output="$(upnpc -l 2>&1)"; then
-                upnp_status=0
-            else
-                upnp_status=$?
-            fi
+            result INFO "L'outil upnpc n'est pas installé ; la détection active UPnP est ignorée."
         fi
-
-        if (( upnp_status == 124 )); then
-            result INFO "Aucune réponse UPnP reçue dans le délai de 7 secondes ; aucune passerelle UPnP/IGD n'a été confirmée."
-        elif grep -qiE 'No IGD|No valid.*IGD|No UPnP.*found|No.*UPnP.*Device' <<< "$upnp_output"; then
-            result OK "Aucune passerelle UPnP/IGD n'a été trouvée sur le réseau local."
-        elif grep -qiE 'Found valid IGD|InternetGatewayDevice|GetExternalIPAddress|ExternalIPAddress' <<< "$upnp_output"; then
-            result ATTENTION "Une passerelle UPnP/IGD répond sur le réseau local. Son adresse externe n'est ni affichée ni enregistrée par PatSecure."
-        elif (( upnp_status == 0 )); then
-            result INFO "Une réponse UPnP a été reçue, mais son format n'a pas permis de confirmer une passerelle IGD."
+    }
+    
+    audit_resources() {
+        local disk_percent
+        local memory_percent
+    
+        section "[6/7] Ressources du système"
+    
+        disk_percent="$(df -P / 2>/dev/null | awk 'NR == 2 {print $5}')"
+        memory_percent="$(free -m 2>/dev/null | awk '/^Mem:/ {if ($2 > 0) printf "%.0f%%", ($3/$2)*100}')"
+    
+        if [[ -n "$disk_percent" ]]; then
+            result INFO "Occupation du disque système : $disk_percent."
         else
-            result INFO "Le contrôle UPnP s'est terminé sans résultat exploitable ; aucune adresse externe n'a été affichée ou enregistrée."
+            result INFO "Occupation du disque système non déterminée."
         fi
-    else
-        result INFO "L'outil upnpc n'est pas installé ; la détection active UPnP est ignorée."
-    fi
-}
-
-audit_resources() {
-    local disk_percent
-    local memory_percent
-
-    section "[6/7] Ressources du système"
-
-    disk_percent="$(df -P / 2>/dev/null | awk 'NR == 2 {print $5}')"
-    memory_percent="$(free -m 2>/dev/null | awk '/^Mem:/ {if ($2 > 0) printf "%.0f%%", ($3/$2)*100}')"
-
-    if [[ -n "$disk_percent" ]]; then
-        result INFO "Occupation du disque système : $disk_percent."
-    else
-        result INFO "Occupation du disque système non déterminée."
-    fi
-
-    if [[ -n "$memory_percent" ]]; then
-        result INFO "Mémoire utilisée au moment de l'audit : $memory_percent."
-    else
-        result INFO "Utilisation mémoire non déterminée."
-    fi
-}
-
-audit_summary() {
-    section "[7/7] Résumé"
-
-    echo "  [OK]         $COUNT_OK"
-    echo "  [ATTENTION]  $COUNT_ATTENTION"
-    echo "  [ERREUR]     $COUNT_ERREUR"
-    echo "  [INFO]       $COUNT_INFO"
-
-    report_line "[RÉSUMÉ] OK=$COUNT_OK ATTENTION=$COUNT_ATTENTION ERREUR=$COUNT_ERREUR INFO=$COUNT_INFO"
-    report_line "[INFO] L'audit n'a effectué aucune mise à jour, suppression ou modification."
-    report_line "[INFO] Une écoute réseau ou la présence d'IPv6 ne suffit pas, à elle seule, à prouver une exposition depuis Internet."
-    report_line "[INFO] Les éléments [ATTENTION] doivent être vérifiés avant toute réparation."
-}
-
-run_audit() {
-    title
-
-    AUDIT_SUDO=0
-    COUNT_OK=0
-    COUNT_ATTENTION=0
-    COUNT_ERREUR=0
-    COUNT_INFO=0
-    UFW_ACTIVE=0
-    UFW_IPV6=0
-    UFW_DEFAULT_INCOMING="unknown"
-    PRIVATE_REPORT_FILE=""
-    SHARE_REPORT_FILE=""
-
-    echo "Mode AUDIT : lecture seule, sans modification du système."
-    echo "Deux rapports seront produits : privé et partageable."
-
-    if ! start_reports; then
-        pause_screen
-        return
-    fi
-
-    prepare_read_only_sudo
-    audit_updates
-    audit_firewall
-    audit_services
-    audit_listening_ports
-    audit_network_exposure
-    audit_resources
-    audit_summary
-
-    echo
-    echo "====================================================="
-    echo -e "${VERT}Audit terminé sans modification.${FIN}"
-    echo "Rapport privé      : $PRIVATE_REPORT_FILE"
-    echo "Rapport partageable: $SHARE_REPORT_FILE"
-    echo "====================================================="
-
-    private_line ""
-    private_line "Audit terminé sans modification."
-    report_line ""
-    report_line "Fin du rapport."
-
-    pause_screen
-}
-
-run_maintenance() {
-    local apt_result
-
-    title
-    echo -e "${JAUNE}${GRAS}Mode MAINTENANCE${FIN}"
-    echo "Les commandes susceptibles de modifier le système demanderont confirmation."
-    echo
-
-    if ! sudo -v; then
-        echo -e "${ROUGE}Droits administrateur non obtenus. Maintenance annulée.${FIN}"
-        pause_screen
-        return
-    fi
-
-    if ! confirm "Actualiser la liste des paquets avec apt update"; then
-        echo "Maintenance annulée."
-        pause_screen
-        return
-    fi
-
-    if ! sudo apt update; then
-        echo -e "${ROUGE}Échec de apt update. Aucune autre opération n'est lancée.${FIN}"
-        pause_screen
-        return
-    fi
-
-    echo
-    echo "Mises à jour disponibles :"
-    apt list --upgradable 2>/dev/null
-
-    if confirm "Installer les mises à jour normales avec apt upgrade"; then
-        if ! sudo apt upgrade; then
-            echo -e "${ROUGE}La mise à jour s'est terminée avec une erreur.${FIN}"
+    
+        if [[ -n "$memory_percent" ]]; then
+            result INFO "Mémoire utilisée au moment de l'audit : $memory_percent."
+        else
+            result INFO "Utilisation mémoire non déterminée."
         fi
-    else
-        echo "Installation des mises à jour ignorée."
-    fi
-
-    echo
-    echo "Simulation du nettoyage des paquets inutiles :"
-    apt_result="$(sudo apt-get --simulate autoremove 2>&1)"
-    printf '%s\n' "$apt_result"
-
-    if confirm "Lancer apt autoremove sans réponse automatique"; then
-        sudo apt autoremove
-    else
-        echo "Suppression des paquets inutiles ignorée."
-    fi
-
-    if confirm "Nettoyer les anciens fichiers de paquets avec apt autoclean"; then
-        sudo apt autoclean
-    else
-        echo "Nettoyage du cache ignoré."
-    fi
-
-    echo
-    echo -e "${VERT}Maintenance terminée.${FIN}"
-    pause_screen
-}
-
-latest_report() {
-    local directory="$1"
-    local pattern="$2"
-
-    if [[ -d "$directory" ]]; then
-        find "$directory" -maxdepth 1 -type f -name "$pattern" -printf '%T@ %p\n' 2>/dev/null \
-            | sort -nr | head -n 1 | cut -d' ' -f2-
-    fi
-}
-
-show_last_report() {
-    local type="$1"
-    local latest=""
-    local directory=""
-    local pattern=""
-    local label=""
-
-    title
-
-    case "$type" in
-        private)
-            directory="$PRIVATE_REPORT_DIR"
-            pattern='audit-*.txt'
-            label="privé"
-            ;;
-        shareable)
-            directory="$SHARE_REPORT_DIR"
-            pattern='audit-partageable-*.txt'
-            label="partageable"
-            ;;
-        *)
-            echo "Type de rapport inconnu."
+    }
+    
+    audit_summary() {
+        section "[7/7] Résumé"
+    
+        echo "  [OK]         $COUNT_OK"
+        echo "  [ATTENTION]  $COUNT_ATTENTION"
+        echo "  [ERREUR]     $COUNT_ERREUR"
+        echo "  [INFO]       $COUNT_INFO"
+    
+        report_line "[RÉSUMÉ] OK=$COUNT_OK ATTENTION=$COUNT_ATTENTION ERREUR=$COUNT_ERREUR INFO=$COUNT_INFO"
+        report_line "[INFO] L'audit n'a effectué aucune mise à jour, suppression ou modification."
+        report_line "[INFO] Une écoute réseau ou la présence d'IPv6 ne suffit pas, à elle seule, à prouver une exposition depuis Internet."
+        report_line "[INFO] Les éléments [ATTENTION] doivent être vérifiés avant toute réparation."
+    }
+    
+    run_audit() {
+        title
+    
+        AUDIT_SUDO=0
+        COUNT_OK=0
+        COUNT_ATTENTION=0
+        COUNT_ERREUR=0
+        COUNT_INFO=0
+        UFW_ACTIVE=0
+        UFW_IPV6=0
+        UFW_DEFAULT_INCOMING="unknown"
+        PRIVATE_REPORT_FILE=""
+        SHARE_REPORT_FILE=""
+    
+        echo "Mode AUDIT : lecture seule, sans modification du système."
+        echo "Deux rapports seront produits : privé et partageable."
+    
+        if ! start_reports; then
             pause_screen
             return
-            ;;
-    esac
-
-    latest="$(latest_report "$directory" "$pattern")"
-
-    if [[ -z "$latest" || ! -f "$latest" ]]; then
-        echo "Aucun rapport $label n'est encore disponible."
-    else
-        echo "Dernier rapport $label : $latest"
-        echo "====================================================="
-        sed -n '1,260p' "$latest"
-    fi
-
-    pause_screen
-}
-
-main_menu() {
-    local choice
-
-    while true; do
-        title
-        echo "1) Audit de sécurité — aucune modification"
-        echo "2) Maintenance — actions confirmées une par une"
-        echo "3) Afficher le dernier rapport privé"
-        echo "4) Afficher le dernier rapport partageable"
-        echo "5) Quitter"
+        fi
+    
+        prepare_read_only_sudo
+        audit_updates
+        audit_firewall
+        audit_services
+        audit_listening_ports
+        audit_network_exposure
+        audit_resources
+        audit_summary
+    
         echo
-        read -r -p "Votre choix : " choice
-
-        case "$choice" in
-            1) run_audit ;;
-            2) run_maintenance ;;
-            3) show_last_report private ;;
-            4) show_last_report shareable ;;
-            5) echo "Au revoir."; exit 0 ;;
+        echo "====================================================="
+        echo -e "${VERT}Audit terminé sans modification.${FIN}"
+        echo "Rapport privé      : $PRIVATE_REPORT_FILE"
+        echo "Rapport partageable: $SHARE_REPORT_FILE"
+        echo "====================================================="
+    
+        private_line ""
+        private_line "Audit terminé sans modification."
+        report_line ""
+        report_line "Fin du rapport."
+    
+        pause_screen
+    }
+    
+    run_maintenance() {
+        local apt_result
+    
+        title
+        echo -e "${JAUNE}${GRAS}Mode MAINTENANCE${FIN}"
+        echo "Les commandes susceptibles de modifier le système demanderont confirmation."
+        echo
+    
+        if ! sudo -v; then
+            echo -e "${ROUGE}Droits administrateur non obtenus. Maintenance annulée.${FIN}"
+            pause_screen
+            return
+        fi
+    
+        if ! confirm "Actualiser la liste des paquets avec apt update"; then
+            echo "Maintenance annulée."
+            pause_screen
+            return
+        fi
+    
+        if ! sudo apt update; then
+            echo -e "${ROUGE}Échec de apt update. Aucune autre opération n'est lancée.${FIN}"
+            pause_screen
+            return
+        fi
+    
+        echo
+        echo "Mises à jour disponibles :"
+        apt list --upgradable 2>/dev/null
+    
+        if confirm "Installer les mises à jour normales avec apt upgrade"; then
+            if ! sudo apt upgrade; then
+                echo -e "${ROUGE}La mise à jour s'est terminée avec une erreur.${FIN}"
+            fi
+        else
+            echo "Installation des mises à jour ignorée."
+        fi
+    
+        echo
+        echo "Simulation du nettoyage des paquets inutiles :"
+        apt_result="$(sudo apt-get --simulate autoremove 2>&1)"
+        printf '%s\n' "$apt_result"
+    
+        if confirm "Lancer apt autoremove sans réponse automatique"; then
+            sudo apt autoremove
+        else
+            echo "Suppression des paquets inutiles ignorée."
+        fi
+    
+        if confirm "Nettoyer les anciens fichiers de paquets avec apt autoclean"; then
+            sudo apt autoclean
+        else
+            echo "Nettoyage du cache ignoré."
+        fi
+    
+        echo
+        echo -e "${VERT}Maintenance terminée.${FIN}"
+        pause_screen
+    }
+    
+    latest_report() {
+        local directory="$1"
+        local pattern="$2"
+    
+        if [[ -d "$directory" ]]; then
+            find "$directory" -maxdepth 1 -type f -name "$pattern" -printf '%T@ %p\n' 2>/dev/null \
+                | sort -nr | head -n 1 | cut -d' ' -f2-
+        fi
+    }
+    
+    show_last_report() {
+        local type="$1"
+        local latest=""
+        local directory=""
+        local pattern=""
+        local label=""
+    
+        title
+    
+        case "$type" in
+            private)
+                directory="$PRIVATE_REPORT_DIR"
+                pattern='audit-*.txt'
+                label="privé"
+                ;;
+            shareable)
+                directory="$SHARE_REPORT_DIR"
+                pattern='audit-partageable-*.txt'
+                label="partageable"
+                ;;
             *)
-                echo -e "${JAUNE}Choix invalide.${FIN}"
-                sleep 1
+                echo "Type de rapport inconnu."
+                pause_screen
+                return
                 ;;
         esac
-    done
-}
-
-case "${1:-}" in
-    --audit)
-        run_audit
-        ;;
-    --last-private-report)
-        show_last_report private
-        ;;
-    --last-shareable-report)
-        show_last_report shareable
-        ;;
-    --version)
-        echo "PatSecure v${VERSION}"
-        ;;
-    --help|-h)
-        echo "Utilisation : $0 [--audit|--last-private-report|--last-shareable-report|--version|--help]"
-        ;;
-    "")
-        main_menu
-        ;;
-    *)
-        echo "Option inconnue : $1" >&2
-        echo "Utilisation : $0 [--audit|--last-private-report|--last-shareable-report|--version|--help]" >&2
-        exit 2
-        ;;
-esac
+    
+        latest="$(latest_report "$directory" "$pattern")"
+    
+        if [[ -z "$latest" || ! -f "$latest" ]]; then
+            echo "Aucun rapport $label n'est encore disponible."
+        else
+            echo "Dernier rapport $label : $latest"
+            echo "====================================================="
+            sed -n '1,260p' "$latest"
+        fi
+    
+        pause_screen
+    }
+    
+    main_menu() {
+        local choice
+    
+        while true; do
+            title
+            echo "1) Audit de sécurité — aucune modification"
+            echo "2) Maintenance — actions confirmées une par une"
+            echo "3) Afficher le dernier rapport privé"
+            echo "4) Afficher le dernier rapport partageable"
+            echo "5) Quitter"
+            echo
+            read -r -p "Votre choix : " choice
+    
+            case "$choice" in
+                1) run_audit ;;
+                2) run_maintenance ;;
+                3) show_last_report private ;;
+                4) show_last_report shareable ;;
+                5) echo "Au revoir."; exit 0 ;;
+                *)
+                    echo -e "${JAUNE}Choix invalide.${FIN}"
+                    sleep 1
+                    ;;
+            esac
+        done
+    }
+    
+    case "${1:-}" in
+        --audit)
+            run_audit
+            ;;
+        --last-private-report)
+            show_last_report private
+            ;;
+        --last-shareable-report)
+            show_last_report shareable
+            ;;
+        --version)
+            echo "PatSecure v${VERSION}"
+            ;;
+        --help|-h)
+            echo "Utilisation : $0 [--audit|--last-private-report|--last-shareable-report|--version|--help]"
+            ;;
+        "")
+            main_menu
+            ;;
+        *)
+            echo "Option inconnue : $1" >&2
+            echo "Utilisation : $0 [--audit|--last-private-report|--last-shareable-report|--version|--help]" >&2
+            exit 2
+            ;;
+    esac
+fi
