@@ -58,6 +58,58 @@ else
     fail "Cache ancien non détecté -> obtenu=${age}"
 fi
 
+# Simuler APT dans ce processus de test : aucune commande APT réelle, aucun rapport écrit.
+# Vérifier le compteur ET le premier diagnostic émis par audit_updates.
+apt() {
+    case "$apt_case" in
+        zero) printf 'Listing... Done\n' ;;
+        two)
+            printf 'Listing... Done\nalpha/stable 2 amd64\nbeta/stable 3 amd64\n'
+            ;;
+        failure) return 100 ;;
+        partial)
+            printf 'Listing... Done\nalpha/stable 2 amd64\n'
+            return 100
+            ;;
+    esac
+}
+dpkg() { return 0; }
+section() { :; }
+result() { printf '[%s] %s\n' "$1" "$2"; }
+patsecure_apt_cache_age_hours() { printf '10\n'; }
+
+for apt_case in zero two failure partial; do
+    case "$apt_case" in
+        zero)
+            expected_count=0
+            expected_result="[OK] Aucune mise à jour connue en attente dans le cache APT actuel."
+            ;;
+        two)
+            expected_count=2
+            expected_result="[ATTENTION] 2 mise(s) à jour connue(s) en attente dans le cache APT actuel."
+            ;;
+        failure|partial)
+            expected_count=-1
+            expected_result="[ATTENTION] Le nombre de mises à jour APT n'a pas pu être déterminé."
+            ;;
+    esac
+    expect_equal "Comptage APT ($apt_case)" "$expected_count" "$(patsecure_apt_upgradable_count)"
+    diagnostic="$(audit_updates)"
+    expect_equal "Diagnostic APT ($apt_case)" "$expected_result" "${diagnostic%%$'\n'*}"
+done
+
+# Conserver également le comportement quand APT est introuvable.
+command() {
+    if [[ "${1:-}" == '-v' && "${2:-}" == 'apt' ]]; then
+        return 1
+    fi
+    builtin command "$@"
+}
+expect_equal "Commande APT absente" "-1" "$(patsecure_apt_upgradable_count)"
+diagnostic="$(audit_updates)"
+expect_equal "Diagnostic sans APT" "[ERREUR] La commande apt est introuvable." "${diagnostic%%$'\n'*}"
+
+
 echo
 printf 'Résultat : %d PASS, %d FAIL\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
