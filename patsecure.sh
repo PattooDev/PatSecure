@@ -184,12 +184,20 @@ patsecure_count_upgradable_lines() {
 }
 
 patsecure_apt_upgradable_count() {
+    local apt_output
+
     if ! command -v apt >/dev/null 2>&1; then
         printf '%s\n' "-1"
         return 0
     fi
 
-    LC_ALL=C apt list --upgradable 2>/dev/null | patsecure_count_upgradable_lines
+    # Une sortie vide ou partielle ne constitue pas un comptage fiable en cas d'échec.
+    if ! apt_output="$(LC_ALL=C apt list --upgradable 2>/dev/null)"; then
+        printf '%s\n' "-1"
+        return 0
+    fi
+
+    printf '%s\n' "$apt_output" | patsecure_count_upgradable_lines
 }
 
 patsecure_apt_cache_latest_mtime() {
